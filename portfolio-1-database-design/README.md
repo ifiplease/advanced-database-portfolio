@@ -105,3 +105,104 @@ All foreign keys use `ON DELETE RESTRICT`. This means a customer or account cann
 | `transaction_logs` | `entry_type` must be `debit` or `credit` | Every log entry must be one or the other. |
 | `transaction_logs` | `amount > 0` and `balance_after >= 0` | Log entries must show valid money values. |
 | All tables | `NOT NULL` on required columns | Important fields can never be left empty. |
+
+---
+
+## Normalisation
+
+Normalisation means organising tables so that each fact is stored in only one place. I started from one messy table that holds everything about VanguardPay and broke it down step by step into my final 5 tables.
+
+### Step 0: Unnormalised Table (UNF)
+
+This is what the data looks like if I put everything into one table. Customer details, account details, transactions, log entries, and beneficiaries are all crammed together, with several values in one cell.
+
+| customer_id | customer_name | email | account_numbers | account_types | balances | transaction_refs | transaction_amounts | log_entries | beneficiaries |
+|---|---|---|---|---|---|---|---|---|---|
+| C001 | Ada Obi | ada@mail.com | 0123456789, 0123456790 | savings, current | 45000.00, 12000.00 | TXN001, TXN002 | 5000.00, 20000.00 | debit, credit | 0222222222 (Chidi) |
+
+This design causes three problems (anomalies):
+
+- **Update anomaly:** If Ada changes her email, I have to find and change it everywhere it appears. Miss one and the data disagrees with itself.
+- **Insertion anomaly:** I cannot add a new customer who has no account or transaction yet, because the table expects those values to exist.
+- **Deletion anomaly:** If I delete Ada's only transaction, I may also lose her customer and account details.
+
+### Step 1: First Normal Form (1NF)
+
+**Rule:** every cell holds one value, there are no repeating groups, and every row has a primary key.
+
+To fix this, I did two things:
+
+1. I split every list into separate rows, so there is one row per log entry.
+2. Beneficiaries are a separate repeating group that has nothing to do with transactions. If I kept them in the same table, every beneficiary would be copied onto every transaction row. So I moved them into their own table straight away.
+
+**Table A: customer, account, transaction, and log data** (primary key: `transaction_reference` + `account_number`). The table below shows a few sample rows.
+
+| customer_id | first_name | email | kyc_status | account_number | account_type | balance | transaction_reference | transaction_type | amount | transaction_status | source_account | destination_account | entry_type | balance_after |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C001 | Ada | ada@mail.com | verified | 0123456789 | savings | 45000.00 | TXN001 | transfer | 5000.00 | successful | 0123456789 | 0222222222 | debit | 45000.00 |
+| C002 | Chidi | chidi@mail.com | verified | 0222222222 | current | 15000.00 | TXN001 | transfer | 5000.00 | successful | 0123456789 | 0222222222 | credit | 15000.00 |
+| C001 | Ada | ada@mail.com | verified | 0123456789 | savings | 45000.00 | TXN002 | deposit | 20000.00 | successful | *(empty)* | 0123456789 | credit | 50000.00 |
+
+**Table B: beneficiaries** (primary key: `beneficiary_id`)
+
+| beneficiary_id | customer_id | beneficiary_account_number | nickname |
+|---|---|---|---|
+| 1 | C001 | 0222222222 | Chidi |
+
+Table A is now in 1NF, but Ada's name, email, and account details are repeated on every row. That is the problem 2NF fixes.
+
+### Step 2: Second Normal Form (2NF)
+
+**Rule:** no non-key column may depend on only *part* of a composite primary key.
+
+Table A has a composite key (`transaction_reference` + `account_number`). Checking each column:
+
+| Columns | Depend on | Problem |
+|---|---|---|
+| `transaction_type`, `amount`, `transaction_status`, `source_account`, `destination_account` | `transaction_reference` only | Partial dependency |
+| `account_type`, `balance`, `customer_id`, `first_name`, `email`, `kyc_status` | `account_number` only | Partial dependency |
+| `entry_type`, `balance_after` | The full key (`transaction_reference` + `account_number`) | None |
+
+So I split Table A into three tables:
+
+- **transactions** (transaction_reference, transaction_type, amount, status, source_account, destination_account)
+- **accounts** (account_number, account_type, balance, customer_id, first_name, email, kyc_status)
+- **transaction_logs** (transaction_reference, account_number, entry_type, balance_after)
+
+Now a transaction is stored once instead of once per log entry. But the `accounts` table still has a problem: `first_name`, `email`, and `kyc_status` describe the customer, not the account.
+
+### Step 3: Third Normal Form (3NF)
+
+**Rule:** no non-key column may depend on another non-key column (no transitive dependency).
+
+In `accounts`, the chain is `account_number` → `customer_id` → `first_name`, `email`, `kyc_status`. The customer details depend on `customer_id`, not on the account. So I moved them into their own table:
+
+- **customers** (customer_id, first_name, last_name, email, phone_number, date_of_birth, kyc_status, created_at)
+- **accounts** (account_number, account_type, balance, currency, status, opened_at, `customer_id` as FK)
+
+Now Ada's email is stored once. If she changes it, I update one row.
+
+### Final Result
+
+| Final table | Came from | Why it is in 3NF |
+|---|---|---|
+| `customers` | Customer columns pulled out of `accounts` in Step 3 | Every column describes the customer only. |
+| `accounts` | Account columns from Step 2, cleaned in Step 3 | Every column describes the account. Customer details are reached through the `customer_id` foreign key. |
+| `transactions` | Transaction columns pulled out in Step 2 | Every column describes the transaction. |
+| `transaction_logs` | Log columns from Step 2 | Every column describes one log entry for one account in one transaction. |
+| `beneficiaries` | Separated in Step 1 | Every column describes one saved recipient. |
+
+In the final schema I also replaced `account_number` and `transaction_reference` as primary keys with numeric IDs (`account_id`, `transaction_id`, `log_id`). Numeric IDs are smaller and faster to join on, and they never need to change. `account_number` and `reference` are still kept as `UNIQUE` columns.
+
+This removes the three anomalies from Step 0:
+
+- **Update:** a customer's email is stored in one row only.
+- **Insertion:** I can add a customer with no accounts, and an account with no transactions.
+- **Deletion:** deleting a transaction does not remove customer or account details. The foreign keys with `ON DELETE RESTRICT` also stop me from deleting records that other tables still depend on.
+
+### Deliberate Design Choices
+
+Two columns store values that could technically be worked out from other tables. I kept them on purpose:
+
+- `accounts.balance` is a stored running balance. Reading it is faster than adding up every transaction each time, and I can audit it by comparing it against `transaction_logs` (Key Operation 6).
+- `transaction_logs.amount` repeats the transaction amount. A log is an audit record, so it should still make sense by itself if the original transaction row is ever reversed or changed.
