@@ -251,6 +251,6 @@ Designing the VanguardPay schema taught me that most of the work is deciding wha
 
 **AI tool used:** Claude (Anthropic).
 
-**What I used it for:** I used Claude as a learning partner. It explained concepts such as keys, constraints, and normalisation (1NF to 3NF) in beginner-friendly terms, and helped me draft the DBML for the ER diagram, the `schema.sql` and `test_constraints.sql` scripts, and the wording of these README sections.
+**What I used it for:** I used Claude as a learning partner to clarify database concepts (keys, constraints, and 1NF–3NF normalisation) and troubleshoot DBML and PostgreSQL syntax while I designed and implemented the VanguardPay schema and documentation.
 
 **How I reviewed and verified the output:** I did not copy anything without checking it. I ran both SQL scripts myself in pgAdmin 4, confirmed that all 5 tables were created, and checked the ERD that pgAdmin generated against my own diagram. I tested the constraints by running the failing inserts and reading the error messages. I went through the normalisation steps myself to make sure I could explain where each column ended up and why. The screenshots in this folder are from my own pgAdmin sessions.
