@@ -55,13 +55,36 @@ VanguardPay is a digital banking and payments platform. Customers sign up throug
 
 | Portfolio | How VanguardPay is used |
 |---|---|
-| 1. Database Design and Modelling | ER diagram and relational schema for customers, accounts, and transactions |
-| 2. Query Processing and Optimisation | Queries on statements, balances, and transaction history, with indexing |
+| [1. Database Design and Modelling](./portfolio-1-database-design/) | ER diagram, 1NF–3NF normalisation, and relational schema for customers, accounts, transactions, logs, and beneficiaries |
+| [2. Query Processing and Optimisation](./portfolio-2-query-optimisation/) | Queries on account statements, balance auditing, and suspicious activity, tested on 20,000 transactions with execution plans and indexing |
 | 3. Transactions and Concurrency | Fund transfers with commit, rollback, and concurrent access to the same account |
 | 4. NoSQL and Advanced Data Models | Login sessions and fraud alerts stored as flexible documents |
 | 5. Distributed and Cloud Database | Replication, availability, and consistency for a platform that must stay online |
 
 ---
+
+## Portfolio Progression
+
+### Portfolio 1: Database Design and Modelling
+
+In Portfolio 1, I designed and implemented the relational database foundation for VanguardPay in PostgreSQL.
+
+- I created the Entity-Relationship Diagram (`er-diagram.png`) and normalised the schema from an unnormalised table through 1NF, 2NF, and 3NF.
+- I wrote `schema.sql` to build the five core tables (`customers`, `accounts`, `transactions`, `transaction_logs`, and `beneficiaries`) with surrogate identity keys, `ON DELETE RESTRICT` foreign keys, unique constraints, and named `CHECK` constraints.
+- I wrote `test_constraints.sql` to seed sample records and verif in pgAdmin 4 that invalid balances and malformed transactions are rejected.
+
+[View Portfolio 1](./portfolio-1-database-design/)
+
+### Portfolio 2: Query Processing and Optimisation
+
+In Portfolio 2, I tested and optimised Key Operations 6, 7, and 8 (balance auditing, account statements, and suspicious activity detection) on a scaled dataset.
+
+- I wrote `seed_large_data.sql` to populate the tables with 500 customers, 800 accounts, 20,000 transactions, and 27,709 transaction logs[cite: 1].
+- I wrote three baseline queries in `queries.sql` and recorded their `EXPLAIN ANALYZE` execution plans in pgAdmin 4 before adding any new indexes.
+- I created two targeted indexes in `indexes.sql`: a composite index on `transaction_logs (account_id, logged_at)` for account statements, and a partial covering index on `transactions` for suspicious transfer bursts.
+- Account statements (Key Operation 7) dropped from `4.583 ms` to `0.203 ms` (`337` to `57` buffer hits), and suspicious activity detection (Key Operation 8) dropped from `7.624 ms` to `2.790 ms` (`278` to `21` buffer hits). I left the full balance audit (Key Operation 6) unindexed because reading 100% of the log table naturally favours a sequential scan.
+
+[View Portfolio 2](./portfolio-2-query-optimisation/)
 
 ## AI Use Declaration
 
