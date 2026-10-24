@@ -1,7 +1,9 @@
 # MIT 8103 Advanced Database Systems Portfolio
 
 **Student:** Anjolaoluwa Adegbite
+
 **Programme:** Master of Information Technology (2026/2027 Academic Session)
+
 **Database system:** PostgreSQL (managed with pgAdmin 4)
 
 ---
@@ -79,7 +81,7 @@ In Portfolio 1, I designed and implemented the relational database foundation fo
 
 In Portfolio 2, I tested and optimised Key Operations 6, 7, and 8 (balance auditing, account statements, and suspicious activity detection) on a scaled dataset.
 
-- I wrote `seed_large_data.sql` to populate the tables with 500 customers, 800 accounts, 20,000 transactions, and 27,709 transaction logs[cite: 1].
+- I wrote `seed_large_data.sql` to populate the tables with 500 customers, 800 accounts, 20,000 transactions, and 27,709 transaction logs.
 - I wrote three baseline queries in `queries.sql` and recorded their `EXPLAIN ANALYZE` execution plans in pgAdmin 4 before adding any new indexes.
 - I created two targeted indexes in `indexes.sql`: a composite index on `transaction_logs (account_id, logged_at)` for account statements, and a partial covering index on `transactions` for suspicious transfer bursts.
 - Account statements (Key Operation 7) dropped from `4.583 ms` to `0.203 ms` (`337` to `57` buffer hits), and suspicious activity detection (Key Operation 8) dropped from `7.624 ms` to `2.790 ms` (`278` to `21` buffer hits). I left the full balance audit (Key Operation 6) unindexed because reading 100% of the log table naturally favours a sequential scan.
