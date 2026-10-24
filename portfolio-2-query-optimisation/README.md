@@ -1,6 +1,7 @@
 # Portfolio 2: Query Processing and Optimisation
 
 **Case study:** VanguardPay
+
 **Database system:** PostgreSQL, managed with pgAdmin 4
 
 ## Goal
