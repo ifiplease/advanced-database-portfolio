@@ -26,7 +26,7 @@ I split the work into three SQL scripts: `transactions_atomic.sql` (commit, roll
 
 I picked three active accounts that belong to different customers and hold at least `50000` NGN, and stored them in a small `test_accounts` table with the labels A, B and C. Every test in this portfolio uses these same three accounts. Before any test, account A (`3000000001`) held `69700.00`, account B (`3000000002`) held `200300.00` and account C (`3000000003`) held `362100.00`.
 
-![Test accounts A, B and C with their starting balances in pgAdmin 4](pgadmin-test-accounts.png)
+![Test accounts A, B and C with their starting balances in pgAdmin 4](screenshots/pgadmin-test-accounts.png)
 
 *Accounts A, B and C and their starting balances before any test.*
 
@@ -45,7 +45,7 @@ pgAdmin 4 runs everything in the editor when no text is highlighted, so I highli
 
 I opened a transaction with `BEGIN`, deposited `5000` into account A, wrote the `transactions` row and the credit log, and ended with `COMMIT`. Account A moved from `69700.00` to `74700.00`. Accounts B and C stayed at `200300.00` and `362100.00`, and the stored balance matched the log balance on all three accounts (difference `0.00`).
 
-![Balances for accounts A, B and C after the committed deposit](pgadmin-commit-after.png)
+![Balances for accounts A, B and C after the committed deposit](screenshots/pgadmin-commit-after.png)
 
 *After `COMMIT`, account A holds `74700.00` and every difference is `0.00`.*
 
@@ -53,7 +53,7 @@ I opened a transaction with `BEGIN`, deposited `5000` into account A, wrote the 
 
 I repeated the same `5000` deposit but ended the transaction with `ROLLBACK`. Inside the open transaction, the balance check showed the deposit. After `ROLLBACK`, account A went back to `74700.00` and the deposit's `transactions` row and log row were gone, so the change never became permanent.
 
-![Balances for accounts A, B and C after the rolled-back deposit](pgadmin-rollback-after.png)
+![Balances for accounts A, B and C after the rolled-back deposit](screenshots/pgadmin-rollback-after.png)
 
 *After `ROLLBACK`, account A is back at `74700.00`.*
 
@@ -61,7 +61,7 @@ I repeated the same `5000` deposit but ended the transaction with `ROLLBACK`. In
 
 I opened a transaction, credited account B with `1000`, and then tried to debit account A by `1` naira more than its balance. The `ck_accounts_balance` constraint rejected the debit, and PostgreSQL refused every further statement until I ran `ROLLBACK`. The rollback also removed the earlier credit to account B, so B returned to `200300.00`. This showed me that one failed step cancels the whole transaction, not just the step that failed.
 
-![ck_accounts_balance error on account A and the rollback undoing the credit to account B](pgadmin-constraint-rollback.png)
+![ck_accounts_balance error on account A and the rollback undoing the credit to account B](screenshots/pgadmin-constraint-rollback.png)
 
 *The ck_accounts_balance constraint error on account A aborting the open transaction.*
 
@@ -89,7 +89,7 @@ The transfer was transaction `20005` (`VGP2026102790000005`) for `15000.00`. Its
 
 The first two rows are the original transfer (account A debited, account B credited). The last two rows are the reversal, which puts the `15000.00` back: account B is debited down to `197800.00` and account A is credited back up to `84700.00`. The transaction status is now `reversed`, and the original log rows stay in place, so the audit trail keeps both the transfer and its reversal.
 
-![Ledger rows for the transfer after fn_transfer and fn_reverse_transaction](pgadmin-fn-transfer-and-reverse.png)
+![Ledger rows for the transfer after fn_transfer and fn_reverse_transaction](screenshots/pgadmin-fn-transfer-and-reverse.png)
 
 *The four ledger rows for transaction `20005`: the transfer legs and the reversal legs.*
 
@@ -99,7 +99,7 @@ The transfer got `transaction_id` `20005` and `log_id` `27714` to `27717` even t
 
 After all the Stage 1 tests, account A held `84700.00`, account B held `197800.00` and account C held `362100.00`, with a difference of `0.00` on each. Across the whole database, the balance audit checked `800` accounts and found `0` out of balance.
 
-![Final Stage 1 balances for accounts A, B and C and the balance audit count](pgadmin-stage1-audit.png)
+![Final Stage 1 balances for accounts A, B and C and the balance audit count](screenshots/pgadmin-stage1-audit.png)
 
 *Final Stage 1 balances for accounts A, B and C showing zero variance between stored and ledger balances.*
 
