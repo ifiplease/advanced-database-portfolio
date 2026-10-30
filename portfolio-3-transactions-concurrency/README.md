@@ -110,3 +110,110 @@ After all the Stage 1 tests, account A held `84700.00`, account B held `197800.0
 - Each function wrote the balance change, the `transactions` row and the log rows as one unit, and the refused operations changed nothing.
 - The reversal restored accounts A and B to their earlier balances and kept both the transfer and the reversal in the ledger.
 - Stored balances still equalled the sum of the logs on every account after all of these tests.
+
+
+## Stage 2: Concurrency and Locking (`concurrency_locking.sql`)
+ 
+### How I tested two sessions
+ 
+I opened two Query Tool tabs in pgAdmin 4 on the same database, which I call Tab 1 and Tab 2. Each tab is its own session, so I could play two customers acting at the same moment. To make the overlap repeatable, I wrote my demo functions with a `pg_sleep(30)` pause between reading a balance and writing it. I started the call in Tab 1, switched to Tab 2 straight away, and started the matching call there while Tab 1 was still paused.
+ 
+### What I built
+ 
+- I created `test_checkpoint`, `fn_take_test_checkpoint()` and `fn_reset_to_checkpoint()`. The checkpoint saves the balances of accounts A, B and C and the latest `transaction_id` and `log_id`. The reset deletes only the rows created after the checkpoint and restores those three balances, so I could undo a test that deliberately damages the data. I only used it on my three test accounts.
+- I created the view `v_test_activity`, which lists the ledger rows created since the last checkpoint.
+- I wrote `fn_withdraw_no_lock` and `fn_withdraw_locked`. They are identical except that the locked version reads the balance with `SELECT ... FOR UPDATE`.
+- I wrote `fn_transfer_demo`, which locks the first account, pauses, and then locks the second account. Its `p_ordered` flag decides whether it locks the source first or the lower `account_id` first.
+### Lost update and double-spend without locking
+ 
+Account C held `362100.00`. In both tabs, I called `fn_withdraw_no_lock` for 60% of C's balance, which is `217260.00` each. Together the two withdrawals ask for 120% of the balance. Both sessions read `362100.00` before either one wrote, so both passed the balance check, and both returned a `transaction_id` with no error.
+ 
+| transaction_id | reference | amount | log_id | account_id | entry_type | balance_after |
+|---|---|---|---|---|---|---|
+| `20006` | `VGP2026102990000006` | `217260.00` | `27718` | `3` | `debit` | `144840.00` |
+| `20007` | `VGP2026102990000007` | `217260.00` | `27719` | `3` | `debit` | `144840.00` |
+ 
+![Two withdrawals of 217260.00 from account C, both with a balance after of 144840.00](screenshots/pgadmin-lost-update-ledger.png)
+ 
+*Both withdrawals ended at the same balance, because the second session overwrote the first.*
+ 
+The balance audit exposed the damage. Account C's stored balance was `144840.00`, but the logs add up to `-72420.00`, a difference of `217260.00`. C paid out `434520.00` against a balance of `362100.00`, and the stored balance hid it. Accounts A and B stayed at `84700.00` and `197800.00` with a difference of `0.00`.
+ 
+![Balance audit showing a difference of 217260.00 on account C](screenshots/pgadmin-lost-update-audit.png)
+ 
+*The audit catches the lost update: account C's stored balance is `217260.00` higher than its ledger.*
+ 
+After taking my screenshots, I ran `fn_reset_to_checkpoint()` to delete both withdrawals and put account C back to `362100.00`, so the screenshots are my evidence for this test.
+ 
+### Fix with SELECT ... FOR UPDATE
+ 
+I ran the same two calls again with `fn_withdraw_locked`. Tab 1 locked account C's row when it read the balance. Tab 2 reached the same row and had to wait.
+ 
+![Tab 2 still running while it waits for the row lock on account C](screenshots/pgadmin-lock-waiting.png)
+ 
+*Tab 2 waiting on the row lock that Tab 1 holds.*
+ 
+When Tab 1 finished, Tab 2 read the new balance and refused the withdrawal:
+ 
+```
+ERROR:  Withdrawal of 217260.00 refused: balance is only 144840.00
+CONTEXT:  PL/pgSQL function fn_withdraw_locked(bigint,numeric,integer) line 13 at RAISE
+SQL state: P0001
+```
+ 
+![Row-locking refusal error in Tab 2](screenshots/pgadmin-lock-refused.png)
+ 
+*The second withdrawal is refused because it saw the balance after the first one.*
+ 
+The audit confirmed it. Account C's stored balance and log balance both equal `144840.00` (difference `0.00`), and accounts A and B are unchanged. The lock turned a double-spend into one successful withdrawal and one refusal.
+ 
+![Balance audit after the locked withdrawals showing a difference of 0.00](screenshots/pgadmin-lock-audit.png)
+ 
+*With the lock, account C's stored balance equals its ledger.*
+ 
+### Deadlock
+ 
+I took a new checkpoint and ran `fn_transfer_demo` with `p_ordered` set to `false`. In Tab 1, I transferred `1000` from account A to account B, which locks A first. In Tab 2, I transferred `2000` from account B to account A, which locks B first. After the pause, each tab needed the row the other one held. PostgreSQL detected the cycle and cancelled one transaction:
+ 
+```
+ERROR:  deadlock detected
+Process 24240 waits for ShareLock on transaction 810; blocked by process 13880.
+Process 13880 waits for ShareLock on transaction 811; blocked by process 24240.
+SQL state: 40P01
+Context: while locking tuple (9,1) in relation "accounts"
+SQL statement "SELECT 1 FROM accounts WHERE account_id = v_second FOR UPDATE"
+PL/pgSQL function fn_transfer_demo(bigint,bigint,numeric,integer,boolean) line 19 at PERFORM
+```
+ 
+![Deadlock detected error from the opposite transfers between accounts A and B](screenshots/pgadmin-deadlock-error.png)
+ 
+*PostgreSQL cancels one of the two opposite transfers with `deadlock detected`.*
+ 
+The `1000` transfer from A to B committed, and the cancelled `2000` transfer from B to A was rolled back completely, so no half-finished transfer was left behind.
+ 
+### Deadlock prevention
+ 
+I took another checkpoint and ran the same opposite transfers with `p_ordered` set to `true`, so both sessions lock the lower `account_id` first. Tab 1 transferred `1500` from A to B and Tab 2 transferred `2500` from B to A. Tab 2 waited for account A, because Tab 1 held it, and carried on once Tab 1 finished. Nothing was cancelled, and both transfers succeeded:
+ 
+| transaction_id | reference | amount | log_id | account_id | entry_type | balance_after |
+|---|---|---|---|---|---|---|
+| `20011` | `VGP2026102990000011` | `1500.00` | `27724` | `1` | `debit` | `82200.00` |
+| `20011` | `VGP2026102990000011` | `1500.00` | `27725` | `2` | `credit` | `200300.00` |
+| `20012` | `VGP2026102990000012` | `2500.00` | `27726` | `2` | `debit` | `197800.00` |
+| `20012` | `VGP2026102990000012` | `2500.00` | `27727` | `1` | `credit` | `84700.00` |
+ 
+![Both opposite transfers completing without a deadlock when accounts are locked in account_id order](screenshots/pgadmin-deadlock-fixed.png)
+ 
+*With a fixed lock order, both transfers complete and the ledger holds all four rows.*
+ 
+### Final audit
+ 
+After the Stage 2 tests, account A held `84700.00`, account B held `197800.00` and account C held `144840.00`, with a difference of `0.00` on each. Account C is lower than at the end of Stage 1 because the locked withdrawal of `217260.00` was a valid transaction that stayed. The balance audit checked `800` accounts and found `0` out of balance.
+ 
+### Results
+ 
+- Without a lock, two sessions that read the same balance both passed the balance check, and the second write overwrote the first. The audit showed a difference of `217260.00` on account C.
+- `SELECT ... FOR UPDATE` made the second session wait, re-read the new balance and refuse the withdrawal. Stored balance and ledger matched.
+- Opposite transfers that lock accounts in different orders caused a deadlock, and PostgreSQL cancelled one of them with SQL state `40P01`.
+- Locking the lower `account_id` first removed the deadlock, and both transfers completed.
+- Every balance matched its ledger after the fixes, and the audit found `0` of `800` accounts out of balance.
