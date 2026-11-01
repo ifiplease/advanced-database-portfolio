@@ -10,15 +10,15 @@ In this Portfolio , I tested how the VanguardPay database keeps money safe when 
 
 I split the work into three SQL scripts: `transactions_atomic.sql` (commit, rollback and atomic operations), `concurrency_locking.sql` (lost updates, row locking and deadlocks) and `isolation_levels.sql` (READ COMMITTED against REPEATABLE READ). 
 
-## Key Operations Covered
+### Key Operations Covered
 
-| Key Operation | What I built |
-|---|---|
-| 2. Deposit funds | `fn_deposit` updates the balance, writes the `transactions` row and writes the credit log in one transaction |
-| 3. Withdraw funds | `fn_withdraw` refuses the request when the balance is too low |
-| 4. Transfer funds | `fn_transfer` writes the debit and the credit together, with two log rows |
-| 5. Reverse failed transactions | `fn_reverse_transaction` puts the money back, logs the opposite entries and sets the status to `reversed`, the same way my seed script models reversals |
-| 6. Audit account balances | `v_balance_audit` compares each stored balance with the credits minus debits in `transaction_logs`. I ran it before and after my tests |
+| Key Operation | What I Built |
+| :--- | :--- |
+| **2. Deposit funds** | `fn_deposit` updates the balance, writes the transactions row, and records the credit log in one transaction. |
+| **3. Withdraw funds** | `fn_withdraw` enforces funds verification and blocks execution when the balance is insufficient. |
+| **4. Transfer funds** | `fn_transfer` debits the sender and credits the receiver atomically with matching ledger rows. |
+| **5. Reverse failed transactions** | `fn_reverse_transaction` credits/debits the offsetting amounts, appends reversal logs, and flags status as `reversed`. |
+| **6. Audit account balances** | `v_balance_audit` checks for reconciliation drift across all accounts by comparing stored balance to net ledger movements. |
 
 ## Stage 1: Atomic Transactions (`transactions_atomic.sql`)
 
@@ -80,12 +80,12 @@ After both refusals, account C was unchanged at `362100.00`, so a refused operat
 
 The transfer was transaction `20005` (`VGP2026102790000005`) for `15000.00`. Its ledger after the reversal looked like this:
 
-| log_id | account_id | entry_type | balance_after |
-|---|---|---|---|
-| `27714` | `1` | `debit` | `69700.00` |
-| `27715` | `2` | `credit` | `212800.00` |
-| `27716` | `2` | `debit` | `197800.00` |
-| `27717` | `1` | `credit` | `84700.00` |
+| log_id | account_id | entry_type | amount | balance_after |
+| :--- | :--- | :--- | :--- | :--- |
+| 27714 | 1 | debit | 15000.00 | 69700.00 |
+| 27715 | 2 | credit | 15000.00 | 212800.00 |
+| 27716 | 2 | debit | 15000.00 | 197800.00 |
+| 27717 | 1 | credit | 15000.00 | 84700.00 |
 
 The first two rows are the original transfer (account A debited, account B credited). The last two rows are the reversal, which puts the `15000.00` back: account B is debited down to `197800.00` and account A is credited back up to `84700.00`. The transaction status is now `reversed`, and the original log rows stay in place, so the audit trail keeps both the transfer and its reversal.
 
@@ -217,3 +217,91 @@ After the Stage 2 tests, account A held `84700.00`, account B held `197800.00` a
 - Opposite transfers that lock accounts in different orders caused a deadlock, and PostgreSQL cancelled one of them with SQL state `40P01`.
 - Locking the lower `account_id` first removed the deadlock, and both transfers completed.
 - Every balance matched its ledger after the fixes, and the audit found `0` of `800` accounts out of balance.
+
+
+## Stage 3: Isolation Levels (`isolation_levels.sql`)
+ 
+### How I tested the isolation levels
+ 
+I used the same two Query Tool tabs. In Tab 1, I opened each transaction with `BEGIN ISOLATION LEVEL ...` and kept it open. In Tab 2, I ran a deposit in normal auto-commit mode, so it committed straight away. This time the two tabs took turns, so I did not need a pause. I took a new checkpoint first, so `v_test_activity` lists only the Stage 3 deposits. In each transaction, I saved the first read of account A into a temporary table, `first_read`, which drops itself at `COMMIT`. This let one result show the first read and the second read side by side.
+ 
+### READ COMMITTED
+ 
+In Tab 1, I opened a `READ COMMITTED` transaction and read account A, which held `84700.00`. In Tab 2, I deposited `1000` into account A with `fn_deposit`, and it committed. When I read account A again inside the same open Tab 1 transaction, I got `85700.00`, a change of `1000.00`. `READ COMMITTED` shows each statement the latest committed data, so the same transaction read two different balances. This is a non-repeatable read.
+ 
+![READ COMMITTED comparison where the second read is 1000.00 higher than the first](screenshots/pgadmin-read-committed.png)
+ 
+*Under `READ COMMITTED`, Tab 1's second read moves from `84700.00` to `85700.00`.*
+ 
+### REPEATABLE READ
+ 
+I repeated the test with `BEGIN ISOLATION LEVEL REPEATABLE READ`. Tab 1 read account A at `85700.00`. Tab 2 deposited another `1000` and committed. Tab 1's second read stayed at `85700.00`, a change of `0.00`, because a `REPEATABLE READ` transaction keeps the snapshot from its first statement. After I ran `COMMIT`, a normal read in Tab 1 returned `86700.00` under `read committed`, so the new deposit became visible as soon as the old snapshot ended.
+ 
+![REPEATABLE READ comparison where both reads are 85700.00](screenshots/pgadmin-repeatable-read.png)
+ 
+*Under `REPEATABLE READ`, both reads stay at `85700.00` even though Tab 2 committed a deposit.*
+ 
+### Serialization failure and retry
+ 
+In Tab 1, I opened a `REPEATABLE READ` transaction and read account A at `86700.00`. In Tab 2, I deposited `1000` and committed, which took account A to `87700.00`. Back in Tab 1, I called `fn_deposit` for `500`. The function's `UPDATE` hit a row that changed after Tab 1's snapshot, and PostgreSQL refused it:
+ 
+```
+ERROR:  could not serialize access due to concurrent update
+CONTEXT:  SQL statement "UPDATE accounts
+    SET balance = balance + p_amount
+    WHERE account_id = p_account_id AND status = 'active'
+    RETURNING balance"
+PL/pgSQL function fn_deposit(bigint,numeric) line 10 at SQL statement
+SQL state: 40001
+```
+ 
+![Serialization failure with SQL state 40001 on the concurrent deposit](screenshots/pgadmin-serialization-error.png)
+ 
+*`REPEATABLE READ` refuses the update because account A changed after Tab 1's snapshot.*
+ 
+PostgreSQL does not treat this as a bug. It stops Tab 1 from writing a balance based on a stale read, which is the same lost update I showed in Stage 2. I ran `ROLLBACK`, then retried the same `500` deposit in a new `REPEATABLE READ` transaction. The new transaction took a fresh snapshot, saw `87700.00`, and the deposit committed, taking account A to `88200.00`.
+ 
+The Stage 3 ledger held four deposits. The failed attempt left no rows, and the retry is the last row:
+ 
+| transaction_id | reference | amount | log_id | account_id | entry_type | balance_after |
+|---|---|---|---|---|---|---|
+| `20013` | `VGP2026103090000013` | `1000.00` | `27728` | `1` | `credit` | `85700.00` |
+| `20014` | `VGP2026103090000014` | `1000.00` | `27729` | `1` | `credit` | `86700.00` |
+| `20016` | `VGP2026103090000016` | `1000.00` | `27731` | `1` | `credit` | `87700.00` |
+| `20017` | `VGP2026103090000017` | `500.00` | `27732` | `1` | `credit` | `88200.00` |
+ 
+![Ledger of the four committed deposits after the rollback and retry](screenshots/pgadmin-isolation-retry.png)
+ 
+*The failed deposit left no ledger rows, and the retry committed as transaction `20017`.*
+ 
+The numbering skips `20015` and `27730`. Before I ran Test 3 across both tabs, I ran an extra test in Tab 1 and ended it with `ROLLBACK;`, which used up one id. As in Stage 1, PostgreSQL does not give identity numbers back when a transaction rolls back.
+ 
+### Final audit
+ 
+After the Stage 3 tests, account A held `88200.00`, account B held `197800.00` and account C held `144840.00`, with a difference of `0.00` on each. The balance audit checked `800` accounts and found `0` out of balance.
+ 
+### Results
+ 
+- Under `READ COMMITTED`, one transaction read account A twice and got `84700.00` and then `85700.00`.
+- Under `REPEATABLE READ`, both reads returned `85700.00`, even though another session committed a deposit in between.
+- A `REPEATABLE READ` transaction that tried to update a row changed after its snapshot failed with SQL state `40001`, and the same deposit succeeded when I retried it in a new transaction.
+- The failed attempt left no `transactions` or `transaction_logs` rows, and the audit found `0` of `800` accounts out of balance.
+
+## Technical Reflection
+
+### Key Insights and Trade-offs
+
+- **Application Logic vs. Atomic Updates:** A standard single-statement `UPDATE accounts SET balance = balance - amount` in PostgreSQL is inherently safe under `READ COMMITTED` because the second transaction waits and re-evaluates the updated row. Concurrency bugs like lost updates and double-spending emerge when application code adopts a "read-then-write" pattern (reading balance into memory, evaluating business logic, then writing back an absolute value).
+- **Pessimistic vs. Optimistic Concurrency:** `SELECT ... FOR UPDATE` acts as an explicit pessimistic lock, queuing concurrent sessions and preventing stale state at the cost of blocking latency. Conversely, `REPEATABLE READ` snapshot isolation avoids row-level waiting up front, but rejects conflicting writes at commit time with a serialization failure (`40001`), requiring a robust application-level retry mechanism.
+- **Deadlock Avoidance via Strict Lock Ordering:** Unordered two-phase row locking across multiple resources inevitably creates circular dependencies under contention (`40P01`). Enforcing a globally consistent lock acquisition order (such as `LEAST(source, dest)` followed by `GREATEST(source, dest)`) eliminates circular waits entirely.
+- **Ledger Invariance:** Stored balances alone can mask concurrency anomalies, as demonstrated in the unindexed lost-update test where the stored balance appeared valid. The balance audit view (`v_balance_audit`) confirmed that ledger invariance (stored balance equals the net sum of transaction logs) is the only reliable verification standard in transactional banking systems.
+ 
+## AI Use Declaration
+ 
+**AI tool used:** Claude (Anthropic).
+ 
+**What I used it for:** I used Claude as a learning partner. It explained transactions, row locking, deadlocks and isolation levels in beginner terms, as well as to assist with SQL scripting.
+ 
+**How I reviewed, corrected, tested and verified the output:** I ran every script myself in pgAdmin 4, using two Query Tool tabs for the concurrency and isolation tests, and I took all 17 screenshots from my own runs. I copied every number, id and error message into this README from my own pgAdmin 4 output. I checked the results against each other, for example that the stored balance minus the log balance on account C equals `217260.00`. I used the balance audit after each stage to confirm that no account was out of balance. I also changed the plan from eight scripts to three so that Portfolio 3 matches the structure of Portfolios 1 and 2.
+ 
+I remain responsible for the accuracy, originality and understanding of everything in this portfolio.
