@@ -59,7 +59,7 @@ VanguardPay is a digital banking and payments platform. Customers sign up throug
 |---|---|
 | [1. Database Design and Modelling](./portfolio-1-database-design/) | ER diagram, 1NF–3NF normalisation, and relational schema for customers, accounts, transactions, logs, and beneficiaries |
 | [2. Query Processing and Optimisation](./portfolio-2-query-optimisation/) | Queries on account statements, balance auditing, and suspicious activity, tested on 20,000 transactions with execution plans and indexing |
-| 3. Transactions and Concurrency | Fund transfers with commit, rollback, and concurrent access to the same account |
+| [3. Transactions and Concurrency](./portfolio-3-transactions-concurrency/) | Atomic deposits, withdrawals, transfers, and reversals with commit and rollback, row locking against lost updates and deadlocks, and READ COMMITTED against REPEATABLE READ, tested in two pgAdmin 4 sessions |
 | 4. NoSQL and Advanced Data Models | Login sessions and fraud alerts stored as flexible documents |
 | 5. Distributed and Cloud Database | Replication, availability, and consistency for a platform that must stay online |
 
@@ -87,6 +87,16 @@ In Portfolio 2, I tested and optimised Key Operations 6, 7, and 8 (balance audit
 - Account statements (Key Operation 7) dropped from `4.583 ms` to `0.203 ms` (`337` to `57` buffer hits), and suspicious activity detection (Key Operation 8) dropped from `7.624 ms` to `2.790 ms` (`278` to `21` buffer hits). I left the full balance audit (Key Operation 6) unindexed because reading 100% of the log table naturally favours a sequential scan.
 
 [View Portfolio 2](./portfolio-2-query-optimisation/)
+
+### Portfolio 3: Transactions and Concurrency Control
+ 
+In Portfolio 3, I tested how VanguardPay keeps money safe when several steps must succeed together and when several sessions use the same account at the same time. I ran every test on the seeded database from Portfolio 2, using three dedicated test accounts.
+ 
+- I wrote `transactions_atomic.sql` to show `COMMIT`, `ROLLBACK`, and a `ck_accounts_balance` failure cancelling a whole transaction. I built `fn_deposit`, `fn_withdraw`, `fn_transfer`, and `fn_reverse_transaction` (Key Operations 2 to 5) so the balance change, the `transactions` row, and the `transaction_logs` rows succeed or fail as one unit.
+- I wrote `concurrency_locking.sql` to run two pgAdmin 4 sessions against the same account. Without locking, two withdrawals of `217260.00` from account C both passed the balance check, and my balance audit showed a difference of `217260.00`. With `SELECT ... FOR UPDATE`, the second withdrawal was refused. I also caused a deadlock between opposite transfers (SQL state `40P01`) and removed it by locking the lower `account_id` first.
+- I wrote `isolation_levels.sql` to compare `READ COMMITTED` and `REPEATABLE READ`. The first read account A at `84700.00` and then `85700.00` inside one transaction, while the second held at `85700.00`. A concurrent update under `REPEATABLE READ` failed with SQL state `40001` and succeeded when I retried it.
+- I reused the balance audit (Key Operation 6) after every stage, and it found `0` of `800` accounts out of balance each time.
+[View Portfolio 3](./portfolio-3-transactions-concurrency/)
 
 ## AI Use Declaration
 
