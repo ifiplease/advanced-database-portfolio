@@ -4,7 +4,7 @@
 
 **Programme:** Master of Information Technology (2026/2027 Academic Session)
 
-**Database system:** PostgreSQL (managed with pgAdmin 4)
+**Database system:** PostgreSQL (managed with pgAdmin 4) for Portfolios 1 to 3, and MongoDB Atlas (managed with MongoDB Compass) for Portfolio 4
 
 ---
 
@@ -60,7 +60,7 @@ VanguardPay is a digital banking and payments platform. Customers sign up throug
 | [1. Database Design and Modelling](./portfolio-1-database-design/) | ER diagram, 1NF–3NF normalisation, and relational schema for customers, accounts, transactions, logs, and beneficiaries |
 | [2. Query Processing and Optimisation](./portfolio-2-query-optimisation/) | Queries on account statements, balance auditing, and suspicious activity, tested on 20,000 transactions with execution plans and indexing |
 | [3. Transactions and Concurrency](./portfolio-3-transactions-concurrency/) | Atomic deposits, withdrawals, transfers, and reversals with commit and rollback, row locking against lost updates and deadlocks, and READ COMMITTED against REPEATABLE READ, tested in two pgAdmin 4 sessions |
-| 4. NoSQL and Advanced Data Models | Login sessions and fraud alerts stored as flexible documents |
+| [4. NoSQL and Advanced Data Models](./portfolio-4-nosql/) | Login sessions and fraud alerts stored as flexible documents in MongoDB Atlas, with CRUD operations, nested queries, aggregations, indexes, execution plans, and a TTL index, plus a comparison with PostgreSQL `JSONB` |
 | 5. Distributed and Cloud Database | Replication, availability, and consistency for a platform that must stay online |
 
 ---
@@ -73,7 +73,7 @@ In Portfolio 1, I designed and implemented the relational database foundation fo
 
 - I created the Entity-Relationship Diagram (`er-diagram.png`) and normalised the schema from an unnormalised table through 1NF, 2NF, and 3NF.
 - I wrote `schema.sql` to build the five core tables (`customers`, `accounts`, `transactions`, `transaction_logs`, and `beneficiaries`) with surrogate identity keys, `ON DELETE RESTRICT` foreign keys, unique constraints, and named `CHECK` constraints.
-- I wrote `test_constraints.sql` to seed sample records and verif in pgAdmin 4 that invalid balances and malformed transactions are rejected.
+- I wrote `test_constraints.sql` to seed sample records and verify in pgAdmin 4 that invalid balances and malformed transactions are rejected.
 
 [View Portfolio 1](./portfolio-1-database-design/)
 
@@ -96,7 +96,19 @@ In Portfolio 3, I tested how VanguardPay keeps money safe when several steps mus
 - I wrote `concurrency_locking.sql` to run two pgAdmin 4 sessions against the same account. Without locking, two withdrawals of `217260.00` from account C both passed the balance check, and my balance audit showed a difference of `217260.00`. With `SELECT ... FOR UPDATE`, the second withdrawal was refused. I also caused a deadlock between opposite transfers (SQL state `40P01`) and removed it by locking the lower `account_id` first.
 - I wrote `isolation_levels.sql` to compare `READ COMMITTED` and `REPEATABLE READ`. The first read account A at `84700.00` and then `85700.00` inside one transaction, while the second held at `85700.00`. A concurrent update under `REPEATABLE READ` failed with SQL state `40001` and succeeded when I retried it.
 - I reused the balance audit (Key Operation 6) after every stage, and it found `0` of `800` accounts out of balance each time.
+
 [View Portfolio 3](./portfolio-3-transactions-concurrency/)
+
+### Portfolio 4: NoSQL and Advanced Data Models
+ 
+In Portfolio 4, I moved the semi-structured side of VanguardPay into MongoDB and tested how documents compare with relational tables. I ran everything on a free MongoDB Atlas (M0) cluster through MongoDB Compass and its `mongosh` shell, in a database called `vanguardpay_nosql`, and kept the money ledger in PostgreSQL.
+ 
+- I wrote `seed_documents.js` to build two collections: `login_sessions` (3,000 documents with nested `device` and `geo` objects) and `fraud_alerts` (153 documents whose `rule_payload` changes shape by rule type). I tied them to PostgreSQL through plain `customer_id` and `account_id` values, planted scenarios for test accounts A, B, and C (`account_id` 1 to 3), and loaded the 10 transfer-burst accounts from a pgAdmin query on the Portfolio 2 data (20 transfers each, `33,982,000` NGN in total).
+- I wrote `queries_and_indexes.js` to run CRUD operations (`insertOne`, `updateOne` with `$set` and `$push`, `updateMany`, and `deleteMany`), nested queries with dot notation, `$elemMatch`, and `$exists`, and aggregations with `$group` and `$lookup`. The `updateMany` step closed `10` stale low-severity alerts, and the failed-login aggregation showed `358` of `381` failures coming from Nigeria.
+- I created five indexes: a compound index on `login_sessions (customer_id, login_at)`, two unique indexes, a TTL index on `expires_at`, and a partial index on open alerts. With `explain('executionStats')`, the customer session query dropped from `3000` documents examined (`SORT > COLLSCAN`, `4 ms`) to `9` (`FETCH > IXSCAN`, `1 ms`), and the open alerts query dropped from `153` to `38`. An expired test session was removed by the TTL index after about `45` seconds.
+- I wrote an explanation of suitability comparing MongoDB documents with PostgreSQL tables and `JSONB` for login sessions and polymorphic fraud alerts, and I documented the trade-off that MongoDB has no foreign keys, so the application has to enforce `customer_id` and `account_id` references.
+
+[View Portfolio 4](./portfolio-4-nosql/)
 
 ## AI Use Declaration
 
