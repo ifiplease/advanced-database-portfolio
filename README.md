@@ -1,10 +1,6 @@
-# MIT 8103 Advanced Database Systems Portfolio
+# VanguardPay — Relational, NoSQL & Distributed Database Architecture
 
-**Student:** Anjolaoluwa Adegbite
-
-**Programme:** Master of Information Technology (2026/2027 Academic Session)
-
-**Database system:** PostgreSQL (managed with pgAdmin 4) for Portfolios 1 to 3, and MongoDB Atlas (managed with MongoDB Compass) for Portfolio 4
+**Database system:** PostgreSQL 18 (pgAdmin 4) and MongoDB Atlas 8.0 (MongoDB Compass)
 
 ---
 
@@ -37,7 +33,7 @@ VanguardPay is a digital banking and payments platform. Customers sign up throug
 - **Transaction logs:** a permanent audit record of every change to money in the system.
 - **Beneficiaries:** saved recipients that customers send money to often.
 
-**Unstructured / Semi-Structured Data (NoSQL, Portfolio 4):**
+**Unstructured / Semi-Structured Data (NoSQL, Portfolio 4 and 5):**
 
 - **Login sessions and device activity:** records of when and from where customers access the platform.
 - **Fraud alerts:** flagged events that need review.
@@ -61,7 +57,7 @@ VanguardPay is a digital banking and payments platform. Customers sign up throug
 | [2. Query Processing and Optimisation](./portfolio-2-query-optimisation/) | Queries on account statements, balance auditing, and suspicious activity, tested on 20,000 transactions with execution plans and indexing |
 | [3. Transactions and Concurrency](./portfolio-3-transactions-concurrency/) | Atomic deposits, withdrawals, transfers, and reversals with commit and rollback, row locking against lost updates and deadlocks, and READ COMMITTED against REPEATABLE READ, tested in two pgAdmin 4 sessions |
 | [4. NoSQL and Advanced Data Models](./portfolio-4-nosql/) | Login sessions and fraud alerts stored as flexible documents in MongoDB Atlas, with CRUD operations, nested queries, aggregations, indexes, execution plans, and a TTL index, plus a comparison with PostgreSQL `JSONB` |
-| 5. Distributed and Cloud Database | Replication, availability, and consistency for a platform that must stay online |
+| [5. Distributed and Cloud Database](./portfolio-5-distributed-cloud/) | Range partitioning of a `transactions` copy with partition pruning, replication settings, PostgreSQL backup and restore, a 3-node MongoDB Atlas replica set tested with write concern and read preference, a Compass JSON backup, and CAP, shard key, and failover design |
 
 ---
 
@@ -105,11 +101,34 @@ In Portfolio 4, I moved the semi-structured side of VanguardPay into MongoDB and
  
 - I wrote `seed_documents.js` to build two collections: `login_sessions` (3,000 documents with nested `device` and `geo` objects) and `fraud_alerts` (153 documents whose `rule_payload` changes shape by rule type). I tied them to PostgreSQL through plain `customer_id` and `account_id` values, planted scenarios for test accounts A, B, and C (`account_id` 1 to 3), and loaded the 10 transfer-burst accounts from a pgAdmin query on the Portfolio 2 data (20 transfers each, `33,982,000` NGN in total).
 - I wrote `queries_and_indexes.js` to run CRUD operations (`insertOne`, `updateOne` with `$set` and `$push`, `updateMany`, and `deleteMany`), nested queries with dot notation, `$elemMatch`, and `$exists`, and aggregations with `$group` and `$lookup`. The `updateMany` step closed `10` stale low-severity alerts, and the failed-login aggregation showed `358` of `381` failures coming from Nigeria.
-- I created five indexes: a compound index on `login_sessions (customer_id, login_at)`, two unique indexes, a TTL index on `expires_at`, and a partial index on open alerts. With `explain('executionStats')`, the customer session query dropped from `3000` documents examined (`SORT > COLLSCAN`, `4 ms`) to `9` (`FETCH > IXSCAN`, `1 ms`), and the open alerts query dropped from `153` to `38`. An expired test session was removed by the TTL index after about `45` seconds.
+- I created five indexes: a compound index on `login_sessions (customer_id, login_at)`, two unique indexes, a TTL index on `expires_at`, and a partial index on open alerts. With `explain('executionStats')`, the customer session query dropped from `3,000` documents examined (`SORT > COLLSCAN`, `4 ms`) to `9` (`FETCH > IXSCAN`, `1 ms`), and the open alerts query dropped from `153` to `38`. An expired test session was removed by the TTL index after about `45` seconds.
 - I wrote an explanation of suitability comparing MongoDB documents with PostgreSQL tables and `JSONB` for login sessions and polymorphic fraud alerts, and I documented the trade-off that MongoDB has no foreign keys, so the application has to enforce `customer_id` and `account_id` references.
 
 [View Portfolio 4](./portfolio-4-nosql/)
 
+### Portfolio 5: Distributed and Cloud Databases
+ 
+In Portfolio 5, I took VanguardPay from one local database to a distributed design, and I tested on both PostgreSQL 18 in pgAdmin 4 and the MongoDB Atlas M0 replica set in Compass. I separated what I built from what I designed, because M0 cannot shard or take cloud backups and my local PostgreSQL is a single server.
+ 
+- I wrote `partitioning.sql` to build a range-partitioned copy of `transactions` by `created_at` in a separate `partition_demo` schema, so the live ledger and its foreign keys from Portfolios 1 to 3 stayed untouched. The script created 26 monthly partitions from the dates in the data, plus a default partition, and loaded all `20,012` rows with a matching total of `2,969,904,160.00` NGN and `0` rows in the default partition. A one-month query read `1` of `27` partitions and dropped from `4.718 ms` to `0.459 ms` (`282` to `28` buffer hits).
+- I wrote `replication_and_backup_checks.sql` to inspect the replication settings of my PostgreSQL 18.6 server: `wal_level` is `replica` with `0` connected standbys and `archive_mode` off, so it is a single server with no point-in-time recovery. I then backed up `vanguardpay_db` in pgAdmin 4 in Custom format and restored it into `vanguardpay_restore`. All nine checks matched, including `20,012` transactions, `27,727` transaction logs, and `0` of `800` accounts out of balance.
+- I wrote `replica_set_tests.js` to test the 3-node Atlas replica set in Compass. Inserts under `w: 1`, `"majority"`, and `w: 3` averaged `105.6`, `109.4`, and `115.8` ms, and a `w: 4` write was rejected with `UnsatisfiableWriteConcern` (code `100`) but its document was still stored. A `secondary` read was answered by a different node from the `primary`, `secondaryPreferred` reads split `5` and `5` across the two secondaries, and `0` of `20` immediate secondary reads missed a fresh write.
+- I exported the `153` documents of `fraud_alerts` as JSON from Compass and restored them into a test collection. The counts, the `created_at` date types, and the totals by rule type all matched.
+- I documented the CAP trade-offs (consistency for the ledger and `w: "majority"` fraud alert writes, eventual consistency for `secondaryPreferred` analytics reads), proposed shard keys of `{ customer_id: 1, login_at: 1 }` for `login_sessions` and `{ customer_id: 1, created_at: 1 }` for `fraud_alerts`, and compared failover for both systems.
+
+[View Portfolio 5](./portfolio-5-distributed-cloud/)
+ 
+---
+ 
 ## AI Use Declaration
 
-*(To be completed in the final documentation.)*
+This declaration covers Portfolios 1 to 5.
+
+- **Tool Utilised:** Claude (Anthropic).
+- **Scope of Assistance:** Assisting with SQL and `mongosh` script structure, reviewing normalisation and document-modelling choices, troubleshooting query syntax, and structuring architectural comparisons across relational, NoSQL, and distributed database models.
+- **Verification and Validation:** The VanguardPay case study architecture, schema constraints, and test scenarios were designed and verified by the author across all five portfolios:
+  - Every PostgreSQL script (Portfolios 1, 2, 3, and 5) was manually executed in pgAdmin 4 on PostgreSQL 18, and every MongoDB script (Portfolios 4 and 5) was manually executed in MongoDB Compass against a live MongoDB Atlas M0 cluster.
+  - All `EXPLAIN (ANALYZE, BUFFERS)` plans, `explain('executionStats')` summaries, concurrency locking and isolation tests, TTL expirations, and backup/restore verifications (`0` of `800` accounts out of balance) were captured directly from live database runs.
+  - All screenshots, empirical metrics, and academic references were independently verified before inclusion.
+
+All code execution, analytical conclusions, and documentation integrity across this repository remain the sole responsibility of the author.
