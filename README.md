@@ -1,4 +1,4 @@
-# VanguardPay — Relational, NoSQL & Distributed Database Architecture
+# VanguardPay - Relational, NoSQL & Distributed Database Architecture
 
 **Database system:** PostgreSQL 18 (pgAdmin 4) and MongoDB Atlas 8.0 (MongoDB Compass)
 
