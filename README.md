@@ -1,6 +1,6 @@
 # VanguardPay - Relational, NoSQL & Distributed Database Architecture
 
-**Database system:** PostgreSQL 18 (pgAdmin 4) and MongoDB Atlas 8.0 (MongoDB Compass)
+**Database system:** PostgreSQL 18 (managed with pgAdmin 4) for Portfolios 1 to 3 and the relational half of Portfolio 5, and MongoDB Atlas (managed with MongoDB Compass) for Portfolios 4 and 5
 
 ---
 
@@ -99,7 +99,7 @@ In Portfolio 3, I tested how VanguardPay keeps money safe when several steps mus
  
 In Portfolio 4, I moved the semi-structured side of VanguardPay into MongoDB and tested how documents compare with relational tables. I ran everything on a free MongoDB Atlas (M0) cluster through MongoDB Compass and its `mongosh` shell, in a database called `vanguardpay_nosql`, and kept the money ledger in PostgreSQL.
  
-- I wrote `seed_documents.js` to build two collections: `login_sessions` (3,000 documents with nested `device` and `geo` objects) and `fraud_alerts` (153 documents whose `rule_payload` changes shape by rule type). I tied them to PostgreSQL through plain `customer_id` and `account_id` values, planted scenarios for test accounts A, B, and C (`account_id` 1 to 3), and loaded the 10 transfer-burst accounts from a pgAdmin query on the Portfolio 2 data (20 transfers each, `33,982,000` NGN in total).
+- I wrote `seed_documents.js` to build two collections: `login_sessions` (3,000 documents with nested `device` and `geo` objects) and `fraud_alerts` (153 documents whose `rule_payload` changes shape by rule type). I linked them to PostgreSQL through `customer_id` and `account_id` , planted scenarios for test accounts A, B, and C (`account_id` 1 to 3), and loaded the 10 transfer-burst accounts from a pgAdmin query on the Portfolio 2 data (20 transfers each, `33,982,000` NGN in total).
 - I wrote `queries_and_indexes.js` to run CRUD operations (`insertOne`, `updateOne` with `$set` and `$push`, `updateMany`, and `deleteMany`), nested queries with dot notation, `$elemMatch`, and `$exists`, and aggregations with `$group` and `$lookup`. The `updateMany` step closed `10` stale low-severity alerts, and the failed-login aggregation showed `358` of `381` failures coming from Nigeria.
 - I created five indexes: a compound index on `login_sessions (customer_id, login_at)`, two unique indexes, a TTL index on `expires_at`, and a partial index on open alerts. With `explain('executionStats')`, the customer session query dropped from `3,000` documents examined (`SORT > COLLSCAN`, `4 ms`) to `9` (`FETCH > IXSCAN`, `1 ms`), and the open alerts query dropped from `153` to `38`. An expired test session was removed by the TTL index after about `45` seconds.
 - I wrote an explanation of suitability comparing MongoDB documents with PostgreSQL tables and `JSONB` for login sessions and polymorphic fraud alerts, and I documented the trade-off that MongoDB has no foreign keys, so the application has to enforce `customer_id` and `account_id` references.
@@ -108,7 +108,7 @@ In Portfolio 4, I moved the semi-structured side of VanguardPay into MongoDB and
 
 ### Portfolio 5: Distributed and Cloud Databases
  
-In Portfolio 5, I took VanguardPay from one local database to a distributed design, and I tested on both PostgreSQL 18 in pgAdmin 4 and the MongoDB Atlas M0 replica set in Compass. I separated what I built from what I designed, because M0 cannot shard or take cloud backups and my local PostgreSQL is a single server.
+In Portfolio 5, I evaluated VanguardPay as a distributed system across PostgreSQL 18 and the 3-node MongoDB Atlas replica set. I implemented and measured range partitioning, replication configuration, backup and restore, write concern and read preference, and I designed the CAP trade-offs, shard keys, and failover for both systems.
  
 - I wrote `partitioning.sql` to build a range-partitioned copy of `transactions` by `created_at` in a separate `partition_demo` schema, so the live ledger and its foreign keys from Portfolios 1 to 3 stayed untouched. The script created 26 monthly partitions from the dates in the data, plus a default partition, and loaded all `20,012` rows with a matching total of `2,969,904,160.00` NGN and `0` rows in the default partition. A one-month query read `1` of `27` partitions and dropped from `4.718 ms` to `0.459 ms` (`282` to `28` buffer hits).
 - I wrote `replication_and_backup_checks.sql` to inspect the replication settings of my PostgreSQL 18.6 server: `wal_level` is `replica` with `0` connected standbys and `archive_mode` off, so it is a single server with no point-in-time recovery. I then backed up `vanguardpay_db` in pgAdmin 4 in Custom format and restored it into `vanguardpay_restore`. All nine checks matched, including `20,012` transactions, `27,727` transaction logs, and `0` of `800` accounts out of balance.
@@ -124,11 +124,22 @@ In Portfolio 5, I took VanguardPay from one local database to a distributed desi
 
 This declaration covers Portfolios 1 to 5.
 
-- **Tool Utilised:** Claude (Anthropic).
-- **Scope of Assistance:** Assisting with SQL and `mongosh` script structure, reviewing normalisation and document-modelling choices, troubleshooting query syntax, and structuring architectural comparisons across relational, NoSQL, and distributed database models.
-- **Verification and Validation:** The VanguardPay case study architecture, schema constraints, and test scenarios were designed and verified by the author across all five portfolios:
+- **AI tool used:** Claude (Anthropic).
+- **What I used it for:** Assisting with SQL and `mongosh` script structure, reviewing normalisation and document-modelling choices, troubleshooting query syntax, and structuring architectural comparisons across relational, NoSQL, and distributed database models.
+- **How I reviewed, corrected, tested and verified the output:** The VanguardPay case study architecture, schema constraints, and test scenarios were designed and verified by the author across all five portfolios:
   - Every PostgreSQL script (Portfolios 1, 2, 3, and 5) was manually executed in pgAdmin 4 on PostgreSQL 18, and every MongoDB script (Portfolios 4 and 5) was manually executed in MongoDB Compass against a live MongoDB Atlas M0 cluster.
   - All `EXPLAIN (ANALYZE, BUFFERS)` plans, `explain('executionStats')` summaries, concurrency locking and isolation tests, TTL expirations, and backup/restore verifications (`0` of `800` accounts out of balance) were captured directly from live database runs.
   - All screenshots, empirical metrics, and academic references were independently verified before inclusion.
 
-All code execution, analytical conclusions, and documentation integrity across this repository remain the sole responsibility of the author.
+I remain responsible for the accuracy, originality and understanding of everything in this portfolio.
+
+## References
+
+* Brewer, E. (2000). *Towards Robust Distributed Systems.* Keynote, ACM Symposium on Principles of Distributed Computing.
+* Date, C. J. (2019). *Database Design and Relational Theory: Normal Forms and All That Jazz* (2nd ed.). Apress.
+* Gilbert, S., & Lynch, N. (2002). Brewer's conjecture and the feasibility of consistent, available, partition-tolerant web services. *ACM SIGACT News*, 33(2), 51–59.
+* Kleppmann, M. (2017). *Designing Data-Intensive Applications.* O'Reilly Media.
+* MongoDB, Inc. (2026). *MongoDB Manual (Version 8.0): CRUD, Aggregation Pipeline, Indexes, Replication, and Sharding.* https://www.mongodb.com/docs/manual/
+* MongoDB, Inc. (2026). *MongoDB Atlas Documentation.* https://www.mongodb.com/docs/atlas/
+* PostgreSQL Global Development Group. (2026). *PostgreSQL 18 Documentation: SQL Language, Performance Tips, Concurrency Control, Table Partitioning, and High Availability.* https://www.postgresql.org/docs/18/
+* Silberschatz, A., Korth, H. F., & Sudarshan, S. (2019). *Database System Concepts* (7th ed.). McGraw-Hill.
